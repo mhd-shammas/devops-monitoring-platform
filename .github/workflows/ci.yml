@@ -6,24 +6,39 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          python-version: "3.12"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install backend dependencies
-        run: pip install -r requirements.txt
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ghcr.io/mhd-shammas/devops-monitoring-platform-backend:latest
 
-      - name: Build backend Docker image
-        run: docker build -t devops-monitor-backend .
-
-      - name: Build frontend Docker image
-        run: docker build -t devops-monitor-frontend ./frontend
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          build-args: |
+            NEXT_PUBLIC_FASTAPI_URL=http://127.0.0.1:8000
+          tags: ghcr.io/mhd-shammas/devops-monitoring-platform-frontend:latest
