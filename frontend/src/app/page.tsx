@@ -4,7 +4,14 @@ import { useEffect, useState, useCallback } from "react";
 import { MetricRecord } from "@/types/metric";
 import { AlertRecord } from "@/types/alert";
 import { IncidentRecord } from "@/types/incident";
-import { fetchLatestMetric, fetchMetrics, fetchAlerts, fetchIncidents } from "@/lib/api";
+import {
+  fetchLatestMetric,
+  fetchMetrics,
+  fetchAlerts,
+  fetchIncidents,
+  fetchServers,
+  ServerStatus,
+} from "@/lib/api";
 import { formatBytes } from "@/lib/formatters";
 import { AlertsBanner } from "@/components/AlertsBanner";
 import { StatusCard } from "@/components/StatusCard";
@@ -25,6 +32,7 @@ export default function DashboardPage() {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
+  const [server, setServer] = useState<ServerStatus | null>(null);
 
   // Core data fetching function
   const loadData = useCallback(async (showSkeleton = false) => {
@@ -37,11 +45,18 @@ export default function DashboardPage() {
 
     try {
       // Fetch latest record, historical list, active alerts, and incidents in parallel
-      const [latestResult, listResult, alertsResult, incidentsResult] = await Promise.allSettled([
+      const [
+        latestResult,
+        listResult,
+        alertsResult,
+        incidentsResult,
+        serversResult,
+      ] = await Promise.allSettled([
         fetchLatestMetric(),
         fetchMetrics(50),
         fetchAlerts(),
         fetchIncidents(50),
+        fetchServers(),
       ]);
 
       let newLatest: MetricRecord | null = null;
@@ -49,6 +64,7 @@ export default function DashboardPage() {
       let newAlerts: AlertRecord[] = [];
       let newIncidents: IncidentRecord[] = [];
       let fetchErrorMessage: string | null = null;
+      let newServer: ServerStatus | null = null;
 
       // Evaluate latest record response
       if (latestResult.status === "fulfilled") {
@@ -60,14 +76,16 @@ export default function DashboardPage() {
         // Handle 404 / No metrics state gracefully
         newLatest = null;
       } else {
-        fetchErrorMessage = latestResult.reason?.message || "Failed to reach backend";
+        fetchErrorMessage =
+          latestResult.reason?.message || "Failed to reach backend";
       }
 
       // Evaluate history records response
       if (listResult.status === "fulfilled") {
         newList = listResult.value;
       } else if (!fetchErrorMessage) {
-        fetchErrorMessage = listResult.reason?.message || "Failed to fetch metrics list";
+        fetchErrorMessage =
+          listResult.reason?.message || "Failed to fetch metrics list";
       }
 
       // Evaluate active alerts response
@@ -80,6 +98,11 @@ export default function DashboardPage() {
         newIncidents = incidentsResult.value;
       }
 
+      // Evaluate monitored server status
+      if (serversResult.status === "fulfilled") {
+        newServer = serversResult.value[0] ?? null;
+      }
+
       if (fetchErrorMessage && !newLatest && newList.length === 0) {
         setError(fetchErrorMessage);
       } else {
@@ -87,10 +110,12 @@ export default function DashboardPage() {
         setMetricsList(newList);
         setAlerts(newAlerts);
         setIncidents(newIncidents);
+        setServer(newServer);
         setLastFetched(new Date());
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "An unexpected error occurred";
+      const msg =
+        err instanceof Error ? err.message : "An unexpected error occurred";
       setError(msg);
     } finally {
       setLoading(false);
@@ -161,6 +186,41 @@ export default function DashboardPage() {
           <SkeletonLoader />
         ) : error ? (
           <ErrorBanner message={error} onRetry={() => loadData(true)} />
+        ) : server?.status === "OFFLINE" ? (
+          <div className="rounded-2xl border border-red-900/50 bg-red-950/20 p-8 text-center">
+            <div className="text-5xl mb-4">🔴</div>
+
+            <h2 className="text-2xl font-bold text-red-400">Server Down</h2>
+
+            <p className="mt-2 text-slate-300">
+              {server.name} is currently unavailable.
+            </p>
+
+            {server.last_seen && (
+              <p className="mt-2 text-sm text-slate-500 font-mono">
+                Last heartbeat: {new Date(server.last_seen).toLocaleString()}
+              </p>
+            )}
+
+            <button
+              onClick={() => loadData(true)}
+              className="mt-6 px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-sm font-semibold"
+            >
+              Check Again
+            </button>
+          </div>
+        ) : server?.status === "CONNECTING" ? (
+          <div className="rounded-2xl border border-yellow-900/50 bg-yellow-950/20 p-8 text-center">
+            <div className="text-5xl mb-4">🟡</div>
+
+            <h2 className="text-2xl font-bold text-yellow-400">
+              Waiting for Server
+            </h2>
+
+            <p className="mt-2 text-slate-300">
+              The monitoring agent has not sent its first heartbeat yet.
+            </p>
+          </div>
         ) : !latestMetric && metricsList.length === 0 ? (
           <EmptyState onRefresh={() => loadData(true)} />
         ) : (
@@ -184,11 +244,16 @@ export default function DashboardPage() {
                 <MetricCard
                   title="Response Time"
                   value={
-                    latestMetric.response_time !== null && latestMetric.response_time !== undefined
+                    latestMetric.response_time !== null &&
+                    latestMetric.response_time !== undefined
                       ? `${latestMetric.response_time.toFixed(1)} ms`
                       : "N/A"
                   }
-                  subValue={latestMetric.application_status.toUpperCase() === "UP" ? "Healthy" : "Offline"}
+                  subValue={
+                    latestMetric.application_status.toUpperCase() === "UP"
+                      ? "Healthy"
+                      : "Offline"
+                  }
                   type="response_time"
                 />
                 <MetricCard

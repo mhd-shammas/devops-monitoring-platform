@@ -33,3 +33,5 @@ build/
 .cache/
 
 .env
+
+devops_monitor_backup.sql

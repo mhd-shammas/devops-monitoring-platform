@@ -2,6 +2,46 @@ from datetime import datetime, timezone
 from sqlalchemy import Column, DateTime, Float, Integer, String
 from database import Base
 
+class Server(Base):
+    """
+    Represents a monitored server.
+    Each server has its own identity and heartbeat state.
+    """
+
+    __tablename__ = "servers"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+
+    # Stable identifier used by the monitoring agent
+    server_id = Column(String(100), unique=True, index=True, nullable=False)
+
+    # Friendly name shown in the dashboard
+    name = Column(String(255), nullable=False)
+
+    # Current public/private IP address
+    ip_address = Column(String(45), nullable=True)
+
+    # ONLINE / OFFLINE / CONNECTING
+    status = Column(String(20), nullable=False, default="CONNECTING")
+
+    # Last successful heartbeat from the monitoring agent
+    last_seen = Column(DateTime(timezone=True), nullable=True)
+
+    # Store only a hash of the authentication token
+    token_hash = Column(String(255), nullable=False)
+
+    # Server registration time
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    def __repr__(self):
+        return (
+            f"<Server(server_id='{self.server_id}', "
+            f"name='{self.name}', status='{self.status}')>"
+        )
 
 class Metric(Base):
     """
