@@ -1,5 +1,9 @@
+import hashlib
+import hmac
 import os
+import secrets
 import time
+
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -8,7 +12,7 @@ from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
 from database import get_db
-from models import Alert, Incident, Metric
+from models import Alert, Incident, Metric, Server
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +22,7 @@ ALERT_CPU_THRESHOLD = float(os.getenv("ALERT_CPU_THRESHOLD", "90.0"))
 ALERT_MEMORY_THRESHOLD = float(os.getenv("ALERT_MEMORY_THRESHOLD", "90.0"))
 ALERT_DISK_THRESHOLD = float(os.getenv("ALERT_DISK_THRESHOLD", "90.0"))
 ALERT_RESPONSE_TIME_THRESHOLD_MS = float(os.getenv("ALERT_RESPONSE_TIME_THRESHOLD_MS", "1000.0"))
+SERVER_HEARTBEAT_TIMEOUT_SECONDS = 30
 
 app = FastAPI(title="DevOps Monitoring Platform")
 
@@ -55,6 +60,123 @@ def toggle_health():
     app_health_status = "unhealthy" if app_health_status == "healthy" else "healthy"
     return {"status": app_health_status}
 
+@app.post("/servers")
+def register_server(
+    name: str = Query(..., min_length=1, max_length=255),
+    ip_address: Optional[str] = Query(default=None, max_length=45),
+    db: Session = Depends(get_db),
+):
+    """
+    Register a new monitored server.
+
+    Returns the authentication token only during registration.
+    The database stores only its SHA-256 hash.
+    """
+    server_id = f"srv_{secrets.token_urlsafe(12)}"
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    server = Server(
+        server_id=server_id,
+        name=name,
+        ip_address=ip_address,
+        status="CONNECTING",
+        last_seen=None,
+        token_hash=token_hash,
+    )
+
+    db.add(server)
+    db.commit()
+    db.refresh(server)
+
+    return {
+        "server_id": server.server_id,
+        "name": server.name,
+        "ip_address": server.ip_address,
+        "status": server.status,
+        "token": token,
+        "created_at": server.created_at.isoformat(),
+    }
+
+@app.get("/servers")
+def get_servers(db: Session = Depends(get_db)):
+    """
+    Returns all registered monitored servers.
+
+    Server status is calculated from the most recent heartbeat.
+    """
+    servers = db.query(Server).order_by(Server.created_at.desc()).all()
+    now_utc = datetime.now(timezone.utc)
+
+    result = []
+
+    for server in servers:
+        if server.last_seen is None:
+            server.status = "CONNECTING"
+        else:
+            last_seen = server.last_seen
+
+            # Normalize naive timestamps to UTC if necessary.
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+
+            elapsed_seconds = (now_utc - last_seen).total_seconds()
+
+            if elapsed_seconds >= SERVER_HEARTBEAT_TIMEOUT_SECONDS:
+                server.status = "OFFLINE"
+            else:
+                server.status = "ONLINE"
+
+        result.append({
+            "server_id": server.server_id,
+            "name": server.name,
+            "ip_address": server.ip_address,
+            "status": server.status,
+            "last_seen": server.last_seen.isoformat() if server.last_seen else None,
+            "created_at": server.created_at.isoformat(),
+        })
+
+    db.commit()
+
+    return result
+
+@app.post("/servers/{server_id}/heartbeat")
+def server_heartbeat(
+    server_id: str,
+    token: str = Query(..., min_length=1),
+    ip_address: Optional[str] = Query(default=None, max_length=45),
+    db: Session = Depends(get_db),
+):
+    """
+    Authenticated heartbeat from a monitoring agent.
+    Updates the server's last_seen timestamp and online status.
+    """
+    server = db.query(Server).filter(Server.server_id == server_id).first()
+
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    if not hmac.compare_digest(token_hash, server.token_hash):
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+    now_utc = datetime.now(timezone.utc)
+
+    server.last_seen = now_utc
+    server.status = "ONLINE"
+
+    if ip_address:
+        server.ip_address = ip_address
+
+    db.commit()
+    db.refresh(server)
+
+    return {
+        "server_id": server.server_id,
+        "status": server.status,
+        "last_seen": server.last_seen.isoformat(),
+    }
 
 @app.get("/metrics/latest")
 def get_latest_metric(db: Session = Depends(get_db)):
