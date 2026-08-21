@@ -1,17 +1,19 @@
+version: '3.8'
+
 services:
-  postgres:
-    image: postgres:16-alpine
+  db:
+    image: postgres:15-alpine
     container_name: devops_postgres
     restart: always
     environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-devops_monitor}
-      POSTGRES_USER: ${POSTGRES_USER:-devops_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devops_user} -d ${POSTGRES_DB:-devops_monitor}"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-devops_monitor}"]
+      interval: 5s
       timeout: 5s
       retries: 5
 
@@ -19,30 +21,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: sh -c "python monitor.py & exec uvicorn main:app --host 0.0.0.0 --port 8000"
     container_name: devops_backend
     restart: always
-    environment:
-      ALERT_CPU_THRESHOLD: "90.0"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-devops_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-devops_monitor}
     ports:
       - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-devops_monitor}
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_FASTAPI_URL: /api
-    container_name: devops_frontend
-    restart: always
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
+    command: sh -c "python monitor.py & exec uvicorn main:app --host 0.0.0.0 --port 8000"
 
 volumes:
   postgres_data:
